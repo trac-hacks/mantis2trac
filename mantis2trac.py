@@ -3,13 +3,16 @@
 """
 Import Mantis bugs into a Trac database.
 
-Requires:  Trac 0.8.X from http://trac.edgewall.com/
+Requires:  Trac 0.9.X from http://trac.edgewall.com/
            Python 2.3 from http://www.python.org/
            MySQL >= 3.23 from http://www.mysql.org/
 
-Version 1.0 (the "it works for me" release)
-Date: August 9, 2005
-Author: Paul Baranowski (paul@paulbaranowski.org)
+Version 1.1
+Date: January 23, 2006
+Author: Joao Prado Maia (jpm@pessoal.org)
+
+Based on version 1.0 from:
+Paul Baranowski (paul@paulbaranowski.org)
 
 Based on bugzilla2trac.py by these guys (thank you!):
 Dmitry Yusupov <dmitry_yus@yahoo.com> - bugzilla2trac.py
@@ -18,6 +21,11 @@ Bill Soudan <bill@soudan.net> - Many enhancements
 
 Example use:
   python mantis2trac.py --db mantis --tracenv /usr/local/trac-projects/myproj/ --host localhost --user root --clean
+
+Changes since version 1.0:
+  - Made it to work against Trac 0.9.3 (tweaks to make the Environment class work)
+  - Re-did all prepared statements-like queries to avoid a DB error
+  - Fixed a reference to the wrong variable name when adding a comment
 
 Notes:
   - Private bugs will become public
@@ -51,7 +59,6 @@ Notes:
 """
 
 import datetime
-import textwrap
 
 ###
 ### Conversion Settings -- edit these before running if desired
@@ -87,7 +94,7 @@ PREFORMAT_COMMENTS = True
 # By default, all bugs are imported from Mantis.  If you add a list
 # of products here, only bugs from those products will be imported.
 # Warning: I have not tested this script where this field is blank!
-PRODUCTS = [ 'campsite' ]
+PRODUCTS = [ 'Web Interface' ]
 
 # Trac doesn't have the concept of a product.  Instead, this script can
 # assign keywords in the ticket entry to represent products.
@@ -229,7 +236,7 @@ import StringIO
 
 import MySQLdb
 import MySQLdb.cursors
-import trac.Environment
+from trac.env import Environment
 
 if not hasattr(sys, 'setdefaultencoding'):
     reload(sys)
@@ -255,7 +262,7 @@ statusXlator = FieldTranslator(STATUS_TRANSLATE)
 
 class TracDatabase(object):
     def __init__(self, path):
-        self.env = trac.Environment.Environment(path)
+        self.env = Environment(path)
         self._db = self.env.get_db_cnx()
         self._db.autocommit = False
         self.loginNameCache = {}
@@ -282,7 +289,7 @@ class TracDatabase(object):
         for value, i in s:
             print "inserting severity ", value, " ", i
             c.execute("""INSERT INTO enum (type, name, value) VALUES (%s, %s, %s)""",
-                      "severity", value.encode('utf-8'), i)
+                      ("severity", value.encode('utf-8'), i,))
         self.db().commit()
     
     def setPriorityList(self, s):
@@ -294,9 +301,7 @@ class TracDatabase(object):
         for value, i in s:
             print "inserting priority ", value, " ", i
             c.execute("""INSERT INTO enum (type, name, value) VALUES (%s, %s, %s)""",
-                      "priority",
-                      value.encode('utf-8'),
-                      i)
+                      ("priority", value.encode('utf-8'), i,))
         self.db().commit()
 
     
@@ -309,7 +314,7 @@ class TracDatabase(object):
         for comp in l:
             print "inserting component '",comp[key],"', owner",  comp['owner']
             c.execute("""INSERT INTO component (name, owner) VALUES (%s, %s)""",
-                      comp[key].encode('utf-8'), comp['owner'].encode('utf-8'))
+                      (comp[key].encode('utf-8'), comp['owner'].encode('utf-8'),))
         self.db().commit()
     
     def setVersionList(self, v, key):
@@ -321,7 +326,7 @@ class TracDatabase(object):
         for vers in v:
             print "inserting version ", vers[key]
             c.execute("""INSERT INTO version (name) VALUES (%s)""",
-                      vers[key].encode('utf-8'))
+                      (vers[key].encode('utf-8'),))
         self.db().commit()
         
     def setMilestoneList(self, m, key):
@@ -333,7 +338,7 @@ class TracDatabase(object):
         for ms in m:
             print "inserting milestone ", ms[key]
             c.execute("""INSERT INTO milestone (name) VALUES (%s)""",
-                      ms[key].encode('utf-8'))
+                      (ms[key].encode('utf-8'),))
         self.db().commit()
     
     def addTicket(self, id, time, changetime, component,
@@ -342,7 +347,6 @@ class TracDatabase(object):
                   summary, description, keywords):
         c = self.db().cursor()
         
-        description = textwrap.fill(description, 70)
         desc = description.encode('utf-8')
         
         if PREFORMAT_COMMENTS:
@@ -357,18 +361,20 @@ class TracDatabase(object):
                                          %s, %s, %s, %s, %s,
                                          %s, %s, %s, %s,
                                          %s, %s, %s)""",
-                  id, time.strftime('%s'), changetime.strftime('%s'), component.encode('utf-8'),
+                  (id, time.strftime('%s'), changetime.strftime('%s'), component.encode('utf-8'),
                   severity.encode('utf-8'), priority.encode('utf-8'), owner, reporter, cc,
                   version, milestone.encode('utf-8'), status.lower(), resolution,
-                  summary.encode('utf-8'), desc, keywords)
+                  summary.encode('utf-8'), desc, keywords,))
         
         self.db().commit()
-        return self.db().db.sqlite_last_insert_rowid()
+        
+        c.execute('''SELECT last_insert_rowid()''')
+        return c.fetchall()[0][0]
+        #return self.db().db.sqlite_last_insert_rowid()
     
     def addTicketComment(self, ticket, time, author, value):
         print " * adding comment \"%s...\"" % value[0:40]
-        comment = textwrap.fill(value, 70)
-        comment = comment.encode('utf-8')
+        comment = value.encode('utf-8')
         
         if PREFORMAT_COMMENTS:
           comment = '{{{\n%s\n}}}' % comment
@@ -376,7 +382,7 @@ class TracDatabase(object):
         c = self.db().cursor()
         c.execute("""INSERT INTO ticket_change (ticket, time, author, field, oldvalue, newvalue)
                                  VALUES        (%s, %s, %s, %s, %s, %s)""",
-                  ticket, time.strftime('%s'), author, 'comment', '', comment)
+                  (ticket, time.strftime('%s'), author, 'comment', '', comment,))
         self.db().commit()
 
     def addTicketChange(self, ticket, time, author, field, oldvalue, newvalue):
@@ -384,7 +390,7 @@ class TracDatabase(object):
         c = self.db().cursor()
         c.execute("""INSERT INTO ticket_change (ticket, time, author, field, oldvalue, newvalue)
                                  VALUES        (%s, %s, %s, %s, %s, %s)""",
-                  ticket, time.strftime('%s'), author, field, oldvalue.encode('utf-8'), newvalue.encode('utf-8'))
+                  (ticket, time.strftime('%s'), author, field, oldvalue.encode('utf-8'), newvalue.encode('utf-8'),))
         self.db().commit()
         # Now actually change the ticket because the ticket wont update itself!
         sql = "UPDATE ticket SET %s='%s' WHERE id=%s" % (field, newvalue, ticket)
