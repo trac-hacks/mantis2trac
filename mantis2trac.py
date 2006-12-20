@@ -7,9 +7,9 @@ Requires:  Trac 0.9.X from http://trac.edgewall.com/
            Python 2.3 from http://www.python.org/
            MySQL >= 3.23 from http://www.mysql.org/
 
-Version 1.2
+Version 1.3
 Author: Anton Stroganov (stroganov.a@gmail.com)
-Date: December 18, 2006
+Date: December 19, 2006
 
 Based on version 1.1 from:
 Author: Joao Prado Maia (jpm@pessoal.org)
@@ -25,6 +25,11 @@ Bill Soudan <bill@soudan.net> - Many enhancements
 Example use:
   python mantis2trac.py --db mantis --tracenv /usr/local/trac-projects/myproj/ \
     --host localhost --user root --clean --products foo,bar
+
+Changes since version 1.2:
+  - better join in the attachment author finding query
+  - changed default encoding to be utf8
+  - added working status->keyword migration for statuses that don't have exact Trac equivalents
 
 Changes since version 1.1:
   - Made it work against Trac running on MySQL (specifically, changes to the 
@@ -156,8 +161,9 @@ STATUS_TRANSLATE = {
   10 : 'new',      # 10 == 'new' in mantis
   20 : 'assigned', # 20 == 'feedback'
   30 : 'new',      # 30 == 'acknowledged' 
-  50 : 'assigned', # 50 == 'assigned' 
   40 : 'new',      # 40 == 'confirmed'
+  50 : 'assigned', # 50 == 'assigned' 
+  60 : 'assigned', # 60 == 'QA'
   80 : 'closed',   # 80 == 'resolved' 
   90 : 'closed'    # 90 == 'closed'
 }
@@ -166,11 +172,19 @@ STATUS_TRANSLATE = {
 # Translate Mantis statuses into Trac keywords.  This provides a way 
 # to retain the Mantis statuses in Trac.  e.g. when a bug is marked 
 # 'verified' in Mantis it will be assigned a VERIFIED keyword.
-##STATUS_KEYWORDS = {
-##    'confirmed' : 'CONFIRMED',
-##    'feedback' : 'FEEDBACK',
-##    'acknowledged':'ACKNOWLEDGED'
-##}
+# STATUS_KEYWORDS = {
+#     'confirmed' : 'CONFIRMED',
+#     'feedback' : 'FEEDBACK',
+#     'acknowledged':'ACKNOWLEDGED',
+#     'QA':'QA'
+# }
+STATUS_KEYWORDS = {
+    20 : 'FEEDBACK',
+    30 : 'ACKNOWLEDGED',
+    40 : 'CONFIRMED',
+    60 : 'QA',
+    80 : 'RESOLVED'
+}
 
 # Possible Trac resolutions are 'fixed', 'invalid', 'wontfix', 'duplicate', 'worksforme'
 RESOLUTION_TRANSLATE = {
@@ -262,7 +276,7 @@ from trac.env import Environment
 if not hasattr(sys, 'setdefaultencoding'):
     reload(sys)
 
-sys.setdefaultencoding('latin1')
+sys.setdefaultencoding('utf-8')
 
 # simulated Attachment class for trac.add
 # unused in 1.2
@@ -386,10 +400,11 @@ class TracDatabase(object):
                   (id, time.strftime('%s'), changetime.strftime('%s'), component.encode('utf-8'),
                   severity.encode('utf-8'), priority.encode('utf-8'), owner, reporter, cc,
                   version, milestone.encode('utf-8'), status.lower(), resolution,
-                  summary.encode('utf-8'), desc, keywords,))
+                  summary.encode('utf-8'), desc, keywords))
         
         self.db().commit()
         
+##        SELECT last_insert_rowid()
         c.execute('''SELECT LAST_INSERT_ID()''')
         return c.fetchall()[0][0]
         #return self.db().db.sqlite_last_insert_rowid()
@@ -428,7 +443,7 @@ class TracDatabase(object):
         
     def getLoginName(self, cursor, userid):
         if userid not in self.loginNameCache:
-            cursor.execute("SELECT * FROM mantis_user_table WHERE id = %s" % userid)
+            cursor.execute("SELECT * FROM mantis_user_table WHERE id = %i" % int(userid))
             loginName = cursor.fetchall()
 
             if loginName:
@@ -637,6 +652,7 @@ def convert(_db, _host, _user, _password, _env, _force):
         bugs_activity = mysql_cur.fetchall()
         resolution = ''
         ticketChanges = []
+        keywords = []
         for activity in bugs_activity:
             field_name = activity['field_name'].lower()
             # Convert Mantis field names...
@@ -669,6 +685,9 @@ def convert(_db, _host, _user, _password, _env, _force):
             ticketChange['time'] = activity['date_modified']
             ticketChange['author'] = trac.getLoginName(mysql_cur, activity['user_id'])
             ticketChange['field'] = field_name
+
+            add_keywords = []
+            remove_keywords = []
             
             if field_name == 'handler_id':
                 ticketChange['field'] = 'owner'
@@ -683,6 +702,11 @@ def convert(_db, _host, _user, _password, _env, _force):
             elif field_name == 'status':
                 ticketChange['oldvalue'] = STATUS_TRANSLATE[int(activity['old_value'])]
                 ticketChange['newvalue'] = STATUS_TRANSLATE[int(activity['new_value'])]
+                if int(activity['old_value']) in STATUS_KEYWORDS:
+                    remove_keywords.append(STATUS_KEYWORDS[int(activity['old_value'])])
+                if int(activity['new_value']) in STATUS_KEYWORDS:
+                    add_keywords.append(STATUS_KEYWORDS[int(activity['new_value'])])
+                
             elif field_name == 'priority':
                 ticketChange['oldvalue'] = PRIORITY_TRANSLATE[int(activity['old_value'])]
                 ticketChange['newvalue'] = PRIORITY_TRANSLATE[int(activity['new_value'])]
@@ -692,7 +716,21 @@ def convert(_db, _host, _user, _password, _env, _force):
             elif field_name == 'severity':
                 ticketChange['oldvalue'] = SEVERITY_TRANSLATE[int(activity['old_value'])]
                 ticketChange['newvalue'] = SEVERITY_TRANSLATE[int(activity['new_value'])]            
-                
+
+            if add_keywords or remove_keywords:
+                # ensure removed ones are in old
+                old_keywords = keywords + [kw for kw in remove_keywords if kw not in keywords]
+                # remove from new
+                keywords = [kw for kw in keywords if kw not in remove_keywords]
+                # add to new
+                keywords += [kw for kw in add_keywords if kw not in keywords]
+                if old_keywords != keywords:
+                    ticketChangeKw = ticketChange.copy()
+                    ticketChangeKw['field'] = "keywords"
+                    ticketChangeKw['oldvalue'] = ' '.join(old_keywords)
+                    ticketChangeKw['newvalue'] = ' '.join(keywords)
+                    ticketChanges.append(ticketChangeKw)
+                                
             if field_name in IGNORED_ACTIVITY_FIELDS:
                 continue
 
@@ -731,7 +769,7 @@ def convert(_db, _host, _user, _password, _env, _force):
         #
         # Add ticket file attachments
         #
-        attachment_sql = "SELECT b.id,b.bug_id,b.title,b.description,b.filename,b.filesize,b.file_type,UNIX_TIMESTAMP(b.date_added) AS date_added, b.content, h.user_id FROM mantis_bug_file_table AS b LEFT JOIN mantis_bug_history_table AS h ON (h.type = 9 AND h.old_value = b.filename AND h.date_modified = b.date_added) WHERE b.bug_id = %s" % bugid
+        attachment_sql = "SELECT b.id,b.bug_id,b.title,b.description,b.filename,b.filesize,b.file_type,UNIX_TIMESTAMP(b.date_added) AS date_added, b.content, h.user_id FROM mantis_bug_file_table AS b LEFT JOIN mantis_bug_history_table AS h ON (h.type = 9 AND h.old_value = b.filename AND h.bug_id = b.bug_id) WHERE b.bug_id = %s" % bugid
         # print attachment_sql
         mysql_cur.execute(attachment_sql)
         attachments = mysql_cur.fetchall()
