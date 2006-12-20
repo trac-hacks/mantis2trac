@@ -7,8 +7,11 @@ Requires:  Trac 0.9.X from http://trac.edgewall.com/
            Python 2.3 from http://www.python.org/
            MySQL >= 3.23 from http://www.mysql.org/
 
-Version 1.1
-Date: January 23, 2006
+Version 1.2
+Author: Anton Stroganov (stroganov.a@gmail.com)
+Date: December 18, 2006
+
+Based on version 1.1 from:
 Author: Joao Prado Maia (jpm@pessoal.org)
 
 Based on version 1.0 from:
@@ -20,7 +23,23 @@ Mark Rowe <mrowe@bluewire.net.nz> - original TracDatabase class
 Bill Soudan <bill@soudan.net> - Many enhancements 
 
 Example use:
-  python mantis2trac.py --db mantis --tracenv /usr/local/trac-projects/myproj/ --host localhost --user root --clean
+  python mantis2trac.py --db mantis --tracenv /usr/local/trac-projects/myproj/ \
+    --host localhost --user root --clean --products foo,bar
+
+Changes since version 1.1:
+  - Made it work against Trac running on MySQL (specifically, changes to the 
+    LAST_INSERT_ID() call on line 382 (in the addTicket function))
+  - Couple of bugfixes
+  - Works fine against 10.2
+  - Modified to allow specifying product list on command line
+  - Modified to migrate database-stored mantis attachments correctly.
+      Nota Bene!!! The script requires write access to the attachments 
+      directory of the trac env. So, suggested sequence of actions: 
+        - chmod -R 777 /usr/local/trac-projects/myproj/attachments/
+        - run the script
+        - chown -R apache /usr/local/trac-projects/myproj/attachments/
+        - chgrp -R webuser /usr/local/trac-projects/myproj/attachments/
+        - chmod -R 755 /usr/local/trac-projects/myproj/attachments/
 
 Changes since version 1.0:
   - Made it to work against Trac 0.9.3 (tweaks to make the Environment class work)
@@ -57,7 +76,7 @@ Notes:
     #tktlist tr.color2-even { background: #FFE59F; border-color: #e99; color: #a22 }
     
 """
-
+from urllib import quote
 import datetime
 
 ###
@@ -89,12 +108,14 @@ TRAC_CLEAN = True
 
 # Enclose imported ticket description and comments in a {{{ }}} 
 # preformat block?  This formats the text in a fixed-point font.
-PREFORMAT_COMMENTS = True
+PREFORMAT_COMMENTS = False
 
+# Products are now specified on command line.
 # By default, all bugs are imported from Mantis.  If you add a list
 # of products here, only bugs from those products will be imported.
 # Warning: I have not tested this script where this field is blank!
-PRODUCTS = [ 'Web Interface' ]
+# default products to ignore:
+PRODUCTS = [ ]
 
 # Trac doesn't have the concept of a product.  Instead, this script can
 # assign keywords in the ticket entry to represent products.
@@ -244,6 +265,7 @@ if not hasattr(sys, 'setdefaultencoding'):
 sys.setdefaultencoding('latin1')
 
 # simulated Attachment class for trac.add
+# unused in 1.2
 class Attachment:
     def __init__(self, name, data):
         self.filename = name
@@ -273,7 +295,7 @@ class TracDatabase(object):
     
     def hasTickets(self):
         c = self.db().cursor()
-        c.execute('''SELECT count(*) FROM Ticket''')
+        c.execute('''SELECT count(*) FROM ticket''')
         return int(c.fetchall()[0][0]) > 0
 
     def assertNoTickets(self):
@@ -368,7 +390,7 @@ class TracDatabase(object):
         
         self.db().commit()
         
-        c.execute('''SELECT last_insert_rowid()''')
+        c.execute('''SELECT LAST_INSERT_ID()''')
         return c.fetchall()[0][0]
         #return self.db().db.sqlite_last_insert_rowid()
     
@@ -397,6 +419,7 @@ class TracDatabase(object):
         c.execute(sql)
         self.db().commit()        
         
+    # unused in 1.2
     def addAttachment(self, id, attachment, description, author):
         print 'inserting attachment for ticket %s -- %s' % (id, description)
         attachment.filename = attachment.filename.encode('utf-8')
@@ -418,6 +441,30 @@ class TracDatabase(object):
 
         return self.loginNameCache[userid]
 
+    def get_attachments_dir(self,bugid=0):
+        if bugid > 0:
+            return self.env.path + 'attachments/ticket/%i/' % bugid        
+        else:
+            return self.env.path + 'attachments/ticket/'
+
+    def _mkdir(newdir):
+        """works the way a good mkdir should :)
+            - already exists, silently complete
+            - regular file in the way, raise an exception
+            - parent directory(ies) does not exist, make them as well
+        """
+        if os.path.isdir(newdir):
+            pass
+        elif os.path.isfile(newdir):
+            raise OSError("a file with the same name as the desired " \
+                          "dir, '%s', already exists." % newdir)
+        else:
+            head, tail = os.path.split(newdir)
+            if head and not os.path.isdir(head):
+                _mkdir(head)
+            #print "_mkdir %s" % repr(newdir)
+            if tail:
+                os.mkdir(newdir)
 
 def productFilter(fieldName, products):
     first = True
@@ -457,14 +504,16 @@ def convert(_db, _host, _user, _password, _env, _force):
         trac.db().commit()
         c.execute("""DELETE FROM ticket""")
         trac.db().commit()
-##        c.execute("""DELETE FROM attachment""")
-##        os.system('rm -rf %s' % trac.env.get_attachments_dir())
-##        os.mkdir(trac.env.get_attachments_dir())
-##        trac.db().commit()
+        c.execute("""DELETE FROM attachment""")
+        os.system('rm -rf %s' % trac.get_attachments_dir())
+        os.mkdir(trac.get_attachments_dir())
+        trac.db().commit()
 
     print
     print '0. Finding project IDs...'
-    sql =  "SELECT id, name FROM mantis_project_table WHERE %s" % productFilter('name', PRODUCTS)
+    sql =  "SELECT id, name FROM mantis_project_table"
+    if PRODUCTS:
+        sql += " WHERE %s" % productFilter('name', PRODUCTS)
     mysql_cur.execute(sql)
     project_list = mysql_cur.fetchall()
     project_dict = dict()
@@ -481,6 +530,7 @@ def convert(_db, _host, _user, _password, _env, _force):
     sql = "SELECT category, user_id as owner FROM mantis_project_category_table"
     if PRODUCTS:
        sql += " WHERE %s" % productFilter('project_id', project_dict)
+    print "sql: %s" % sql
     mysql_cur.execute(sql)
     components = mysql_cur.fetchall()
     for component in components:
@@ -522,7 +572,7 @@ def convert(_db, _host, _user, _password, _env, _force):
     print "7. import bugs and bug activity..."
     totalComments = 0
     totalTicketChanges = 0
-##    totalAttachments = 0
+    totalAttachments = 0
     errors = []
     timeAdjustmentHacks = []
     for bug in bugs:
@@ -681,20 +731,56 @@ def convert(_db, _host, _user, _password, _env, _force):
         #
         # Add ticket file attachments
         #
-##        mysql_cur.execute("SELECT * FROM mantis_bug_file_table WHERE bug_id = %s" % bugid)
-##        attachments = mysql_cur.fetchall()
-##        for attachment in attachments:
-##            author = ''
-##            try:
-##                attachmentFile = open(attachment['diskfile'], 'r')
-##                attachmentData = attachmentFile.read()
-##                tracAttachment = Attachment(attachment['filename'], attachmentData)
-##                trac.addAttachment(bugid, tracAttachment, attachment['description'], author)
-##                totalAttachments += 1
-##            except:
-##                errorStr = " * ERROR: couldnt find attachment %s" % attachment['diskfile']
-##                errors.append(errorStr)
-##                print errorStr
+        attachment_sql = "SELECT b.id,b.bug_id,b.title,b.description,b.filename,b.filesize,b.file_type,UNIX_TIMESTAMP(b.date_added) AS date_added, b.content, h.user_id FROM mantis_bug_file_table AS b LEFT JOIN mantis_bug_history_table AS h ON (h.type = 9 AND h.old_value = b.filename AND h.date_modified = b.date_added) WHERE b.bug_id = %s" % bugid
+        # print attachment_sql
+        mysql_cur.execute(attachment_sql)
+        attachments = mysql_cur.fetchall()
+        for attachment in attachments:
+            author = trac.getLoginName(mysql_cur, attachment['user_id'])
+
+            # Old attachment stuff that never worked...
+            # attachmentFile = open(attachment['diskfile'], 'r')
+            # attachmentData = attachmentFile.read()
+            # tracAttachment = Attachment(attachment['filename'], attachmentData)
+            # trac.addAttachment(bugid, tracAttachment, attachment['description'], author)
+
+            try:
+                try:
+                    if(os.path.isdir(trac.get_attachments_dir(bugid)) == False):
+                        try:
+                            os.mkdir(trac.get_attachments_dir(bugid))
+                        except:
+                            errorStr = " * ERROR: couldnt create attachment directory in filesystem at %s" % trac.get_attachments_dir(bugid)
+                            errors.append(errorStr)
+                            print errorStr
+                    # trac stores the files with the special characters like spaces in the filename encoded to the url 
+                    # equivalents, so we have to urllib.quote() the filename we're saving. 
+                    attachmentFile = open(trac.get_attachments_dir(bugid) + quote(attachment['filename']),'wb')
+                    attachmentFile.write(attachment['content'])
+                    attachmentFile.close()
+                except:
+                    errorStr = " * ERROR: couldnt dump attachment data into filesystem at %s" % trac.get_attachments_dir(bugid) + attachment['filename']
+                    errors.append(errorStr)
+                    print errorStr
+                else:
+                    attach_sql = """INSERT INTO attachment (type,id,filename,size,time,description,author,ipnr) VALUES ('ticket',%s,'%s',%i,%i,'%s','%s','127.0.0.1')""" % (bugid,attachment['filename'].encode('utf-8'),attachment['filesize'],attachment['date_added'],attachment['description'].encode('utf-8'),author)
+                    try:
+                        c = trac.db().cursor()
+                        c.execute(attach_sql)
+                        trac.db().commit()
+                    except:
+                        errorStr = " * ERROR: couldnt insert attachment data into database with %s" % attach_sql
+                        errors.append(errorStr)
+                        print errorStr
+                    else:
+                        print 'inserting attachment for ticket %s -- %s, added by %s' % (bugid, attachment['description'], author)
+
+                        totalAttachments += 1
+            except:
+                errorStr = " * ERROR: couldn't migrate attachment %s" % attachment['filename']
+                errors.append(errorStr)
+                print errorStr
+
     print
     if TIME_ADJUSTMENT_HACK:
         for adjustment in timeAdjustmentHacks:
@@ -709,7 +795,7 @@ def convert(_db, _host, _user, _password, _env, _force):
     print "Total tickets imported: %d" % len(bugs)
     print "Total ticket comments:  %d" % totalComments
     print "Total ticket changes:   %d" % totalTicketChanges
-##    print "Total attachments:      %d" % totalAttachments
+    print "Total attachments:      %d" % totalAttachments
     print
 
 def usage():
@@ -724,14 +810,20 @@ def usage():
     print "  -u | --user <MySQL username>     - Effective Mantis database user"
     print "  -p | --passwd <MySQL password>   - Mantis database user password"
     print "  -c | --clean                     - Remove current Trac tickets before importing"
+    print "  --products <product1,product2>   - List of products to import from mantis"
     print "  --help | help                    - This help info"
+    print
+    print "Note:   If you want the ticket attachments to be converted, you MUST run the script"
+    print "        as a user who has write permissions to the trac env attachments directory."
+    print "Note 2: Attachment conversion only works for attachments stored directly in the mantis"
+    print "        database at this point."
     print
     print "Additional configuration options can be defined directly in the script."
     print
     sys.exit(0)
 
 def main():
-    global MANTIS_DB, MANTIS_HOST, MANTIS_USER, MANTIS_PASSWORD, TRAC_ENV, TRAC_CLEAN
+    global MANTIS_DB, MANTIS_HOST, MANTIS_USER, MANTIS_PASSWORD, TRAC_ENV, TRAC_CLEAN, PRODUCTS
     if len (sys.argv) > 1:
         if sys.argv[1] in ['--help','help'] or len(sys.argv) < 4:
             usage()
@@ -754,6 +846,9 @@ def main():
                 iter = iter + 1
             elif sys.argv[iter] in ['-c', '--clean']:
                 TRAC_CLEAN = 1
+            elif sys.argv[iter] in ['--products'] and iter+1 < len(sys.argv):
+                PRODUCTS = sys.argv[iter+1].split(',')
+                iter = iter + 1
             else:
                 print "Error: unknown parameter: " + sys.argv[iter]
                 sys.exit(0)
