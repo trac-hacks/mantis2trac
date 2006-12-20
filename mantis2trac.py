@@ -404,10 +404,15 @@ class TracDatabase(object):
         
         self.db().commit()
         
-##        SELECT last_insert_rowid()
-        c.execute('''SELECT LAST_INSERT_ID()''')
-        return c.fetchall()[0][0]
-        #return self.db().db.sqlite_last_insert_rowid()
+        ## TODO: add database-specific methods to get the last inserted ticket's id...
+        ## PostgreSQL:
+        # c.execute('''SELECT currval("ticket_id_seq")''')
+        ## SQLite:
+        # c.execute('''SELECT last_insert_rowid()''')
+        ## MySQL:
+        # c.execute('''SELECT LAST_INSERT_ID()''')
+        # Oh, Trac db abstraction layer already has a function for this...
+        return self.db().get_last_id(c,'ticket')
     
     def addTicketComment(self, ticket, time, author, value):
         print " * adding comment \"%s...\"" % value[0:40]
@@ -508,7 +513,7 @@ def convert(_db, _host, _user, _password, _env, _force):
     mysql_cur = mysql_con.cursor()
 
     # init Trac environment
-    print "Trac SQLite('%s'): connecting..." % (_env)
+    print "Trac database('%s'): connecting..." % (_env)
     trac = TracDatabase(_env)
 
     # force mode...
