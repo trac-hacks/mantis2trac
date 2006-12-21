@@ -424,7 +424,7 @@ class TracDatabase(object):
         c = self.db().cursor()
         c.execute("""INSERT INTO ticket_change (ticket, time, author, field, oldvalue, newvalue)
                                  VALUES        (%s, %s, %s, %s, %s, %s)""",
-                  (ticket, time.strftime('%s'), author, 'comment', '', comment,))
+                  (ticket, time.strftime('%s'), author, 'comment', '', comment))
         self.db().commit()
 
     def addTicketChange(self, ticket, time, author, field, oldvalue, newvalue):
@@ -432,7 +432,7 @@ class TracDatabase(object):
         c = self.db().cursor()
         c.execute("""INSERT INTO ticket_change (ticket, time, author, field, oldvalue, newvalue)
                                  VALUES        (%s, %s, %s, %s, %s, %s)""",
-                  (ticket, time.strftime('%s'), author, field, oldvalue.encode('utf-8'), newvalue.encode('utf-8'),))
+                  (ticket, time.strftime('%s'), author, field, oldvalue.encode('utf-8'), newvalue.encode('utf-8')))
         self.db().commit()
         # Now actually change the ticket because the ticket wont update itself!
         sql = "UPDATE ticket SET %s='%s' WHERE id=%s" % (field, newvalue, ticket)
@@ -448,11 +448,32 @@ class TracDatabase(object):
         
     def getLoginName(self, cursor, userid):
         if userid not in self.loginNameCache:
-            cursor.execute("SELECT * FROM mantis_user_table WHERE id = %i" % int(userid))
-            loginName = cursor.fetchall()
+            cursor.execute("SELECT username,email,realname,last_visit FROM mantis_user_table WHERE id = %i" % int(userid))
+            result = cursor.fetchall()
 
-            if loginName:
-                loginName = loginName[0]['username']
+            if result:
+                loginName = result[0]['username']
+                print 'Adding user %s to sessions table' % loginName
+                c = self.db().cursor()
+
+                # pre-populate the session table and the realname/email table with user data
+                try:
+                    c.execute(
+                    """INSERT IGNORE INTO session 
+                        (sid, authenticated, last_visit) 
+                    VALUES
+                        (%s, 1, %s)""",(result[0]['username'].encode('utf-8'), result[0]['last_visit'].strftime('%s')))
+                except:
+                    print 'could not insert %s into sessions table: sql error %s ' % loginName, self.db().error()
+                self.db().commit()
+                c.execute(
+                    """INSERT IGNORE INTO session_attribute 
+                        (sid, authenticated, name, value)
+                    VALUES
+                        (%s, %s, %s, %s), (%s, %s, %s, %s)""",
+                        (result[0]['username'].encode('utf-8'), '1', 'name', result[0]['realname'].encode('utf-8'), 
+                        result[0]['username'].encode('utf-8'), '1', 'email', result[0]['email'].encode('utf-8')))
+                self.db().commit()
             else:
                 print 'warning: unknown mantis userid %d, recording as anonymous' % userid
                 loginName = 'anonymous'
@@ -554,7 +575,7 @@ def convert(_db, _host, _user, _password, _env, _force):
     mysql_cur.execute(sql)
     components = mysql_cur.fetchall()
     for component in components:
-            component['owner'] = trac.getLoginName(mysql_cur, component['owner'])
+        component['owner'] = trac.getLoginName(mysql_cur, component['owner'])
     trac.setComponentList(components, 'category')
 
     print
