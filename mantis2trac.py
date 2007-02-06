@@ -459,20 +459,30 @@ class TracDatabase(object):
                 # pre-populate the session table and the realname/email table with user data
                 try:
                     c.execute(
-                    """INSERT IGNORE INTO session 
+                    """INSERT INTO session 
                         (sid, authenticated, last_visit) 
                     VALUES
                         (%s, 1, %s)""",(result[0]['username'].encode('utf-8'), result[0]['last_visit'].strftime('%s')))
                 except:
                     print 'could not insert %s into sessions table: sql error %s ' % loginName, self.db().error()
                 self.db().commit()
+                
+                # insert the user's real name into session attribute table
                 c.execute(
-                    """INSERT IGNORE INTO session_attribute 
+                    """INSERT INTO session_attribute 
                         (sid, authenticated, name, value)
                     VALUES
-                        (%s, %s, %s, %s), (%s, %s, %s, %s)""",
-                        (result[0]['username'].encode('utf-8'), '1', 'name', result[0]['realname'].encode('utf-8'), 
-                        result[0]['username'].encode('utf-8'), '1', 'email', result[0]['email'].encode('utf-8')))
+                        (%s, %s, %s, %s)""",
+                        (result[0]['username'].encode('utf-8'), '1', 'name', result[0]['realname'].encode('utf-8')))
+                self.db().commit()
+
+                # insert the user's email into session attribute table
+                c.execute(
+                    """INSERT INTO session_attribute 
+                        (sid, authenticated, name, value)
+                    VALUES
+                        (%s, %s, %s, %s)""",
+                        (result[0]['username'].encode('utf-8'), '1', 'email', result[0]['email'].encode('utf-8')))
                 self.db().commit()
             else:
                 print 'warning: unknown mantis userid %d, recording as anonymous' % userid
@@ -869,7 +879,7 @@ def usage():
     print
     print "Available Options:"
     print "  --db <MySQL dbname>              - Mantis database"
-    print "  --tracenv /path/to/trac/env      - Full path to Trac db environment"
+    print "  --tracenv /path/to/trac/env/     - Full path to Trac environment"
     print "  -h | --host <MySQL hostname>     - Mantis DNS host name"
     print "  -u | --user <MySQL username>     - Effective Mantis database user"
     print "  -p | --passwd <MySQL password>   - Mantis database user password"
