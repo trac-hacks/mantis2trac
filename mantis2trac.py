@@ -456,34 +456,41 @@ class TracDatabase(object):
                 print 'Adding user %s to sessions table' % loginName
                 c = self.db().cursor()
 
-                # pre-populate the session table and the realname/email table with user data
-                try:
-                    c.execute(
-                    """INSERT INTO session 
-                        (sid, authenticated, last_visit) 
-                    VALUES
-                        (%s, 1, %s)""",(result[0]['username'].encode('utf-8'), result[0]['last_visit'].strftime('%s')))
-                except:
-                    print 'could not insert %s into sessions table: sql error %s ' % loginName, self.db().error()
-                self.db().commit()
+                # check if user is already in the sessions table
+                c.execute("SELECT sid FROM session WHERE sid = '%s'" % result[0]['username'].encode('utf-8'))
+                r = c.fetchall()
                 
-                # insert the user's real name into session attribute table
-                c.execute(
-                    """INSERT INTO session_attribute 
-                        (sid, authenticated, name, value)
-                    VALUES
-                        (%s, %s, %s, %s)""",
-                        (result[0]['username'].encode('utf-8'), '1', 'name', result[0]['realname'].encode('utf-8')))
-                self.db().commit()
+                # if there was no user sid in the database already
+                if not r:
+                    # pre-populate the session table and the realname/email table with user data
+                    try:
+                        c.execute(
+                        """INSERT INTO session 
+                            (sid, authenticated, last_visit) 
+                        VALUES """,(result[0]['username'].encode('utf-8'), '1', result[0]['last_visit'].strftime('%s')))
+                    except:
+                        print 'failed executing sql: '
+                        print """INSERT INTO session 
+                            (sid, authenticated, last_visit) 
+                        VALUES """, (result[0]['username'].encode('utf-8'), '1', result[0]['last_visit'].strftime('%s'))
+                        print 'could not insert %s into sessions table: sql error %s ' % (loginName, self.db().error())
+                    self.db().commit()
+                
+                    # insert the user's real name into session attribute table
+                    c.execute(
+                        """INSERT INTO session_attribute 
+                            (sid, authenticated, name, value)
+                        VALUES
+                            """, (result[0]['username'].encode('utf-8'), '1', 'name', result[0]['realname'].encode('utf-8')))
+                    self.db().commit()
 
-                # insert the user's email into session attribute table
-                c.execute(
-                    """INSERT INTO session_attribute 
-                        (sid, authenticated, name, value)
-                    VALUES
-                        (%s, %s, %s, %s)""",
-                        (result[0]['username'].encode('utf-8'), '1', 'email', result[0]['email'].encode('utf-8')))
-                self.db().commit()
+                    # insert the user's email into session attribute table
+                    c.execute(
+                        """INSERT INTO session_attribute 
+                            (sid, authenticated, name, value)
+                        VALUES
+                            """, (result[0]['username'].encode('utf-8'), '1', 'email', result[0]['email'].encode('utf-8')))
+                    self.db().commit()
             else:
                 print 'warning: unknown mantis userid %d, recording as anonymous' % userid
                 loginName = 'anonymous'
