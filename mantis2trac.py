@@ -467,7 +467,7 @@ class TracDatabase(object):
                         c.execute(
                         """INSERT INTO session 
                             (sid, authenticated, last_visit) 
-                        VALUES """,(result[0]['username'].encode('utf-8'), '1', result[0]['last_visit'].strftime('%s')))
+                        VALUES (%s, %s, %s)""",(result[0]['username'].encode('utf-8'), '1', result[0]['last_visit'].strftime('%s')))
                     except:
                         print 'failed executing sql: '
                         print """INSERT INTO session 
@@ -481,7 +481,7 @@ class TracDatabase(object):
                         """INSERT INTO session_attribute 
                             (sid, authenticated, name, value)
                         VALUES
-                            """, (result[0]['username'].encode('utf-8'), '1', 'name', result[0]['realname'].encode('utf-8')))
+                            (%s, %s, %s, %s)""", (result[0]['username'].encode('utf-8'), '1', 'name', result[0]['realname'].encode('utf-8')))
                     self.db().commit()
 
                     # insert the user's email into session attribute table
@@ -489,7 +489,7 @@ class TracDatabase(object):
                         """INSERT INTO session_attribute 
                             (sid, authenticated, name, value)
                         VALUES
-                            """, (result[0]['username'].encode('utf-8'), '1', 'email', result[0]['email'].encode('utf-8')))
+                            (%s, %s, %s, %s)""", (result[0]['username'].encode('utf-8'), '1', 'email', result[0]['email'].encode('utf-8')))
                     self.db().commit()
             else:
                 print 'warning: unknown mantis userid %d, recording as anonymous' % userid
