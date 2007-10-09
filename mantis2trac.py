@@ -3,9 +3,13 @@
 """
 Import Mantis bugs into a Trac database.
 
-Requires:  Trac 0.9.X from http://trac.edgewall.com/
-           Python 2.3 from http://www.python.org/
+Requires:  Trac 0.9.X or newer from http://trac.edgewall.com/
+           Python 2.4 from http://www.python.org/
            MySQL >= 3.23 from http://www.mysql.org/
+
+Version 1.4
+Author: John Lichovnik (licho@ufo.cz)
+Date: 10.9.2007
 
 Version 1.3
 Author: Anton Stroganov (stroganov.a@gmail.com)
@@ -25,6 +29,11 @@ Bill Soudan <bill@soudan.net> - Many enhancements
 Example use:
   python mantis2trac.py --db mantis --tracenv /usr/local/trac-projects/myproj/ \
     --host localhost --user root --clean --products foo,bar
+
+Changes in version 1.4:
+  - fixed strftime for Python 2.4
+  - fixed Mantis text_id in ticket and comment queries (original version was sometimes adding mismatched descriptions and comments)
+  - added IGNORE_VERSION switch
 
 Changes since version 1.2:
   - better join in the attachment author finding query
@@ -83,6 +92,7 @@ Notes:
 """
 from urllib import quote
 import datetime
+import time
 
 ###
 ### Conversion Settings -- edit these before running if desired
@@ -144,6 +154,9 @@ IGNORE_COMMENTS = [
 # I dont know why you'd want to turn this off, but I give you the option 
 # anyhow. :)
 TIME_ADJUSTMENT_HACK = True
+
+# If set to true, version numbers wont be assigned to tickets (just milestones)
+IGNORE_VERSION = True
 
 ###########################################################################
 ### You probably don't need to change any configuration past this line. ###
@@ -382,6 +395,8 @@ class TracDatabase(object):
                   version, milestone, status, resolution,
                   summary, description, keywords):
         c = self.db().cursor()
+        if IGNORE_VERSION:
+          version=''
         
         desc = description.encode('utf-8')
         
@@ -397,11 +412,11 @@ class TracDatabase(object):
                                          %s, %s, %s, %s, %s,
                                          %s, %s, %s, %s,
                                          %s, %s, %s)""",
-                  (id, time.strftime('%s'), changetime.strftime('%s'), component.encode('utf-8'),
+                  (id, self.convertTime(time), self.convertTime(changetime), component.encode('utf-8'),
                   severity.encode('utf-8'), priority.encode('utf-8'), owner, reporter, cc,
                   version, milestone.encode('utf-8'), status.lower(), resolution,
                   summary.encode('utf-8'), desc, keywords))
-        
+
         self.db().commit()
         
         ## TODO: add database-specific methods to get the last inserted ticket's id...
@@ -413,6 +428,9 @@ class TracDatabase(object):
         # c.execute('''SELECT LAST_INSERT_ID()''')
         # Oh, Trac db abstraction layer already has a function for this...
         return self.db().get_last_id(c,'ticket')
+
+    def convertTime(self,time2):
+        return time.mktime(time2.timetuple())+1e-6*time2.microsecond
     
     def addTicketComment(self, ticket, time, author, value):
         print " * adding comment \"%s...\"" % value[0:40]
@@ -424,15 +442,18 @@ class TracDatabase(object):
         c = self.db().cursor()
         c.execute("""INSERT INTO ticket_change (ticket, time, author, field, oldvalue, newvalue)
                                  VALUES        (%s, %s, %s, %s, %s, %s)""",
-                  (ticket, time.strftime('%s'), author, 'comment', '', comment))
+                  (ticket, self.convertTime(time), author, 'comment', '', comment))
         self.db().commit()
 
     def addTicketChange(self, ticket, time, author, field, oldvalue, newvalue):
+        if (field[0:4]=='doba'): 
+          return
+
         print " * adding ticket change \"%s\": \"%s\" -> \"%s\" (%s)" % (field, oldvalue[0:20], newvalue[0:20], time)
         c = self.db().cursor()
         c.execute("""INSERT INTO ticket_change (ticket, time, author, field, oldvalue, newvalue)
                                  VALUES        (%s, %s, %s, %s, %s, %s)""",
-                  (ticket, time.strftime('%s'), author, field, oldvalue.encode('utf-8'), newvalue.encode('utf-8')))
+                  (ticket, self.convertTime(time), author, field, oldvalue.encode('utf-8'), newvalue.encode('utf-8')))
         self.db().commit()
         # Now actually change the ticket because the ticket wont update itself!
         sql = "UPDATE ticket SET %s='%s' WHERE id=%s" % (field, newvalue, ticket)
@@ -467,12 +488,12 @@ class TracDatabase(object):
                         c.execute(
                         """INSERT INTO session 
                             (sid, authenticated, last_visit) 
-                        VALUES (%s, %s, %s)""",(result[0]['username'].encode('utf-8'), '1', result[0]['last_visit'].strftime('%s')))
+                        VALUES (%s, %s, %s)""",(result[0]['username'].encode('utf-8'), '1', self.convertTime(result[0]['last_visit'])))
                     except:
                         print 'failed executing sql: '
                         print """INSERT INTO session 
                             (sid, authenticated, last_visit) 
-                        VALUES """, (result[0]['username'].encode('utf-8'), '1', result[0]['last_visit'].strftime('%s'))
+                        VALUES """, (result[0]['username'].encode('utf-8'), '1', self.convertTime(result[0]['last_visit']))
                         print 'could not insert %s into sessions table: sql error %s ' % (loginName, self.db().error())
                     self.db().commit()
                 
@@ -647,6 +668,8 @@ def convert(_db, _host, _user, _password, _env, _force):
         ticket['owner'] = trac.getLoginName(mysql_cur, bug['handler_id'])
         ticket['reporter'] = trac.getLoginName(mysql_cur, bug['reporter_id'])
         ticket['version'] = bug['version']
+        if IGNORE_VERSION:
+          ticket['version'] = ''
         ticket['milestone'] = bug['version']
         ticket['summary'] = bug['summary']
         ticket['status'] = STATUS_TRANSLATE[bug['status']]
@@ -661,7 +684,7 @@ def convert(_db, _host, _user, _password, _env, _force):
         
         # Compose the description from the three text fields in Mantis:
         # 'description', 'steps_to_reproduce', 'additional_information'
-        mysql_cur.execute("SELECT * FROM mantis_bug_text_table WHERE id = %s" % bugid) 
+        mysql_cur.execute("SELECT * FROM mantis_bug_text_table WHERE id = %s" % bug['bug_text_id']) 
         longdescs = list(mysql_cur.fetchall())
 
         # check for empty 'longdescs[0]' field...
@@ -682,7 +705,7 @@ def convert(_db, _host, _user, _password, _env, _force):
         #
         # Add ticket comments
         #
-        mysql_cur.execute("SELECT * FROM mantis_bugnote_table, mantis_bugnote_text_table WHERE bug_id = %s AND mantis_bugnote_table.id = mantis_bugnote_text_table.id ORDER BY date_submitted" % bugid)
+        mysql_cur.execute("SELECT * FROM mantis_bugnote_table, mantis_bugnote_text_table WHERE bug_id = %s AND mantis_bugnote_table.bugnote_text_id = mantis_bugnote_text_table.id ORDER BY date_submitted" % bugid)
         bug_notes = mysql_cur.fetchall()
         totalComments += len(bug_notes)
         for note in bug_notes:
