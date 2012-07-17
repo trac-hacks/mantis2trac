@@ -8,7 +8,7 @@ Requires:  Trac 0.9.X or newer from http://trac.edgewall.com/
            MySQL >= 3.23 from http://www.mysql.org/
 
 Version 1.4
-Author: John Lichovnik (licho@ufo.cz)
+Author: John Lichovník (licho@ufo.cz)
 Date: 10.9.2007
 
 Version 1.3

@@ -35,7 +35,12 @@ Available Options:
   --help | help                      - This help info
 ```
 
-# Author/Contributors #
+## Author/Contributors ##
 
-Original Author: [Paul Baranowski](http://paulbaranowski.org/)
-Contributors: [João Prado Maia](http://pessoal.org/), [Anton Stroganov](http://github.com/Aeon)
+### Original Author: ###
+[Paul Baranowski](http://paulbaranowski.org/)
+
+### Contributors: ###
+ * [João Prado Maia](http://pessoal.org/)
+ * [Anton Stroganov](http://github.com/Aeon)
+ * [John Lichovník](http://ufo.cz)
