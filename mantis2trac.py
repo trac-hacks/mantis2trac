@@ -483,17 +483,15 @@ class TracDatabase(object):
                 
                 # if there was no user sid in the database already
                 if not r:
+                    sessionSql = """INSERT INTO session 
+                            (sid, authenticated, last_visit) 
+                        VALUES (%s, %s, %s)""", (result[0]['username'].encode('utf-8'), '1', self.convertTime(result[0]['last_visit']))
                     # pre-populate the session table and the realname/email table with user data
                     try:
-                        c.execute(
-                        """INSERT INTO session 
-                            (sid, authenticated, last_visit) 
-                        VALUES (%s, %s, %s)""",(result[0]['username'].encode('utf-8'), '1', self.convertTime(result[0]['last_visit'])))
+                        c.execute(sessionSql)
                     except:
                         print 'failed executing sql: '
-                        print """INSERT INTO session 
-                            (sid, authenticated, last_visit) 
-                        VALUES """, (result[0]['username'].encode('utf-8'), '1', self.convertTime(result[0]['last_visit']))
+                        print sessionSql
                         print 'could not insert %s into sessions table: sql error %s ' % (loginName, self.db().error())
                     self.db().commit()
                 
