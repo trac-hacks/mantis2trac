@@ -568,7 +568,7 @@ def convert(_db, _host, _user, _password, _env, _force):
     print "Mantis MySQL('%s':'%s':'%s':'%s'): connecting..." % (_db, _host, _user, _password)
     mysql_con = MySQLdb.connect(host=_host, 
                 user=_user, passwd=_password, db=_db, compress=1, 
-                cursorclass=MySQLdb.cursors.DictCursor)
+                cursorclass=MySQLdb.cursors.DictCursor, use_unicode=1)
     mysql_cur = mysql_con.cursor()
 
     # init Trac environment
