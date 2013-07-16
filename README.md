@@ -6,9 +6,9 @@ Currently, the following data is imported from Mantis:
   * bugs
   * bug comments
   * bug activity (field changes)
-  * attachments (as long as they're stored in the database)
+  * attachments
 
-Attachments are imported ONLY if they're stored in the database. There's no provision for migrating filesystem-based attachments at this time.  If you use the script, please read the NOTES section (at the top of the file) and make sure you adjust the config parameters for your environment.
+If you use the script, please read the NOTES section (at the top of the file) and make sure you adjust the config parameters for your environment.
 
 ## Bugs/Feature Requests ##
 
@@ -44,3 +44,4 @@ Available Options:
  * [João Prado Maia](http://pessoal.org/)
  * [Anton Stroganov](http://github.com/Aeon)
  * [John Lichovník](http://ufo.cz)
+ * [Matthew Parmelee](http://interworx.com)

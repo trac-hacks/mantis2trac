@@ -1,11 +1,15 @@
 #!/usr/bin/env python
-
+# -*- coding: utf-8 -*-
 """
 Import Mantis bugs into a Trac database.
 
 Requires:  Trac 0.9.X or newer from http://trac.edgewall.com/
            Python 2.4 from http://www.python.org/
            MySQL >= 3.23 from http://www.mysql.org/
+
+Version 1.5
+Author: Matthew Parmelee (mparmelee@interworx.com)
+Date: July 16, 2013
 
 Version 1.4
 Author: John Lichovník (licho@ufo.cz)
@@ -29,6 +33,11 @@ Bill Soudan <bill@soudan.net> - Many enhancements
 Example use:
   python mantis2trac.py --db mantis --tracenv /usr/local/trac-projects/myproj/ \
     --host localhost --user root --clean --products foo,bar
+
+Changes in version 1.5:
+  - repaired queries to be consistent with Mantis updates
+  - corrected timestamp conversion
+  - enabled file attachment migration
 
 Changes in version 1.4:
   - fixed strftime for Python 2.4
@@ -91,8 +100,9 @@ Notes:
     
 """
 from urllib import quote
-import datetime
+from datetime import datetime, date, timedelta
 import time
+import hashlib
 
 ###
 ### Conversion Settings -- edit these before running if desired
@@ -156,7 +166,7 @@ IGNORE_COMMENTS = [
 TIME_ADJUSTMENT_HACK = True
 
 # If set to true, version numbers wont be assigned to tickets (just milestones)
-IGNORE_VERSION = True
+IGNORE_VERSION = False
 
 ###########################################################################
 ### You probably don't need to change any configuration past this line. ###
@@ -386,8 +396,9 @@ class TracDatabase(object):
         c.execute("""DELETE FROM milestone""")
         for ms in m:
             print "inserting milestone ", ms[key]
-            c.execute("""INSERT INTO milestone (name) VALUES (%s)""",
-                      (ms[key].encode('utf-8'),))
+            c.execute("""INSERT INTO milestone (name, due, completed) VALUES (%s, %s, %s)""",
+                      (ms[key].encode('utf-8'), self.convertTime(ms['date_order']), ms['released']))
+
         self.db().commit()
     
     def addTicket(self, id, time, changetime, component,
@@ -399,30 +410,30 @@ class TracDatabase(object):
           version=''
         
         desc = description.encode('utf-8')
-        
+	type = 'defect'
+ 	if component == 'Features' or severity == 'feature':
+	   type = 'enhancement'
         if PREFORMAT_COMMENTS:
           desc = '{{{\n%s\n}}}' % desc
-
-        print "inserting ticket %s -- \"%s\"" % (id, summary[0:40].replace("\n", " "))
-        c.execute("""INSERT INTO ticket (id, time, changetime, component,
+	print "inserting ticket %s -- \"%s\"" % (id, summary[0:40].replace("\n", " "))
+        c.execute("""INSERT OR REPLACE INTO ticket (id, type, time, changetime, component,
                                          severity, priority, owner, reporter, cc,
                                          version, milestone, status, resolution,
                                          summary, description, keywords)
-                                 VALUES (%s, %s, %s, %s,
+                                 VALUES (%s, %s, %s, %s, %s,
                                          %s, %s, %s, %s, %s,
                                          %s, %s, %s, %s,
                                          %s, %s, %s)""",
-                  (id, self.convertTime(time), self.convertTime(changetime), component.encode('utf-8'),
+                  (id, type, self.convertTime(time), self.convertTime(changetime), component.encode('utf-8'),
                   severity.encode('utf-8'), priority.encode('utf-8'), owner, reporter, cc,
                   version, milestone.encode('utf-8'), status.lower(), resolution,
-                  summary.encode('utf-8'), desc, keywords))
-
+                  summary.decode('utf-8'), desc.decode('utf-8'), keywords.encode('utf-8')))
         self.db().commit()
-        
+
         ## TODO: add database-specific methods to get the last inserted ticket's id...
         ## PostgreSQL:
         # c.execute('''SELECT currval("ticket_id_seq")''')
-        ## SQLite:
+        # SQLite:
         # c.execute('''SELECT last_insert_rowid()''')
         ## MySQL:
         # c.execute('''SELECT LAST_INSERT_ID()''')
@@ -430,33 +441,56 @@ class TracDatabase(object):
         return self.db().get_last_id(c,'ticket')
 
     def convertTime(self,time2):
-        return time.mktime(time2.timetuple())+1e-6*time2.microsecond
+	time2 = datetime.fromtimestamp(time2)
+	return long(str(int(time.mktime(time2.timetuple()))) + '000000')
     
     def addTicketComment(self, ticket, time, author, value):
+	#return
         print " * adding comment \"%s...\"" % value[0:40]
-        comment = value.encode('utf-8')
+        comment = value
         
         if PREFORMAT_COMMENTS:
           comment = '{{{\n%s\n}}}' % comment
 
         c = self.db().cursor()
-        c.execute("""INSERT INTO ticket_change (ticket, time, author, field, oldvalue, newvalue)
+        c.execute("""INSERT OR IGNORE INTO ticket_change (ticket, time, author, field, oldvalue, newvalue)
                                  VALUES        (%s, %s, %s, %s, %s, %s)""",
                   (ticket, self.convertTime(time), author, 'comment', '', comment))
         self.db().commit()
 
     def addTicketChange(self, ticket, time, author, field, oldvalue, newvalue):
+	#return
         if (field[0:4]=='doba'): 
           return
 
+	if field == 'milestone':
+	  field = 'product_version'
+
         print " * adding ticket change \"%s\": \"%s\" -> \"%s\" (%s)" % (field, oldvalue[0:20], newvalue[0:20], time)
         c = self.db().cursor()
-        c.execute("""INSERT INTO ticket_change (ticket, time, author, field, oldvalue, newvalue)
+	
+	#workaround 'unique' warnings POTENTIALLY BAD IDEA ALERT
+	sql = "SELECT * FROM ticket_change WHERE field='%s' AND ticket=%s AND time=%s" % (field, ticket, self.convertTime(time))
+	c.execute(sql)
+	fixtime = c.fetchall()
+	if fixtime:
+	  time = time + 1
+        c.execute("""INSERT OR IGNORE INTO ticket_change (ticket, time, author, field, oldvalue, newvalue)
                                  VALUES        (%s, %s, %s, %s, %s, %s)""",
                   (ticket, self.convertTime(time), author, field, oldvalue.encode('utf-8'), newvalue.encode('utf-8')))
         self.db().commit()
-        # Now actually change the ticket because the ticket wont update itself!
-        sql = "UPDATE ticket SET %s='%s' WHERE id=%s" % (field, newvalue, ticket)
+       
+	#workaround 'unique' warnings POTENTIALLY BAD IDEA ALERT
+        sql = "SELECT * FROM ticket WHERE %s='%s' AND id=%s AND time=%s" % (field, newvalue, ticket, self.convertTime(time))
+        c.execute(sql)
+        fixtime = c.fetchall()
+        if fixtime:
+          time = time + 1
+ 
+	# Now actually change the ticket because the ticket wont update itself!
+        if field == 'component' and newvalue[0:2] == '|-':
+	  newvalue = 'x - SORTME'
+	sql = "UPDATE ticket SET %s='%s' WHERE id=%s" % (field, newvalue, ticket)
         c.execute(sql)
         self.db().commit()        
         
@@ -468,8 +502,8 @@ class TracDatabase(object):
             author, 'unknown')
         
     def getLoginName(self, cursor, userid):
-        if userid not in self.loginNameCache:
-            cursor.execute("SELECT username,email,realname,last_visit FROM mantis_user_table WHERE id = %i" % int(userid))
+        if userid not in self.loginNameCache and userid is not None and userid != '':
+	    cursor.execute("SELECT username,email,realname,last_visit FROM mantis_user_table WHERE id = %i" % int(userid))
             result = cursor.fetchall()
 
             if result:
@@ -492,37 +526,44 @@ class TracDatabase(object):
                     except:
                         print 'failed executing sql: '
                         print sessionSql
-                        print 'could not insert %s into sessions table: sql error %s ' % (loginName, self.db().error())
+                        print 'could not insert %s into sessions table: sql error ' % (loginName)
                     self.db().commit()
                 
                     # insert the user's real name into session attribute table
-                    c.execute(
+                    try:
+   		        c.execute(
                         """INSERT INTO session_attribute 
                             (sid, authenticated, name, value)
                         VALUES
                             (%s, %s, %s, %s)""", (result[0]['username'].encode('utf-8'), '1', 'name', result[0]['realname'].encode('utf-8')))
+		    except:
+			print 'failed executing session-attribute sql'
                     self.db().commit()
 
                     # insert the user's email into session attribute table
-                    c.execute(
+		    try:
+                        c.execute(
                         """INSERT INTO session_attribute 
                             (sid, authenticated, name, value)
                         VALUES
                             (%s, %s, %s, %s)""", (result[0]['username'].encode('utf-8'), '1', 'email', result[0]['email'].encode('utf-8')))
+		    except:
+			print 'failed executing session-attribute sql2'
                     self.db().commit()
             else:
                 print 'warning: unknown mantis userid %d, recording as anonymous' % userid
-                loginName = 'anonymous'
+                loginName = ''
 
             self.loginNameCache[userid] = loginName
-
+	elif userid is None or userid == '':
+	    self.loginNameCache[userid] = 'anonymous'
         return self.loginNameCache[userid]
 
     def get_attachments_dir(self,bugid=0):
         if bugid > 0:
-            return self.env.path + 'attachments/ticket/%i/' % bugid        
+            return 'importfiles/%i/' % bugid        
         else:
-            return self.env.path + 'attachments/ticket/'
+            return 'importfiles/'
 
     def _mkdir(newdir):
         """works the way a good mkdir should :)
@@ -577,11 +618,17 @@ def convert(_db, _host, _user, _password, _env, _force):
     if _force == 1:
         print "cleaning all tickets..."
         c = trac.db().cursor()
-        c.execute("""DELETE FROM ticket_change""")
+	sql = """DELETE FROM ticket_change"""
+        c.execute(sql)
         trac.db().commit()
-        c.execute("""DELETE FROM ticket""")
+	sql = """DELETE FROM ticket"""
+        c.execute(sql)
         trac.db().commit()
-        c.execute("""DELETE FROM attachment""")
+	sql = """DELETE FROM ticket_custom"""
+        c.execute(sql)
+        trac.db().commit()
+	sql = """DELETE FROM attachment"""
+        c.execute(sql)
         os.system('rm -rf %s' % trac.get_attachments_dir())
         os.mkdir(trac.get_attachments_dir())
         trac.db().commit()
@@ -604,16 +651,16 @@ def convert(_db, _host, _user, _password, _env, _force):
 
     print
     print "2. import components..."
-    sql = "SELECT category, user_id as owner FROM mantis_project_category_table"
+    sql = "SELECT DISTINCT name as category, user_id as owner FROM mantis_category_table, mantis_bug_table WHERE user_id=user_id GROUP BY category"
     if PRODUCTS:
-       sql += " WHERE %s" % productFilter('project_id', project_dict)
+      sql += " WHERE %s" % productFilter('project_id', project_dict)
     print "sql: %s" % sql
     mysql_cur.execute(sql)
     components = mysql_cur.fetchall()
     for component in components:
-        component['owner'] = trac.getLoginName(mysql_cur, component['owner'])
+       component['owner'] = trac.getLoginName(mysql_cur, component['owner'])
     trac.setComponentList(components, 'category')
-
+    
     print
     print "3. import priorities..."
     trac.setPriorityList(PRIORITY_LIST)
@@ -622,23 +669,30 @@ def convert(_db, _host, _user, _password, _env, _force):
     print "4. import versions..."
     sql = "SELECT DISTINCTROW version FROM mantis_project_version_table"
     if PRODUCTS:
-       sql += " WHERE %s" % productFilter('project_id', project_dict)
+      sql += " WHERE %s" % productFilter('project_id', project_dict)
     mysql_cur.execute(sql)
     versions = mysql_cur.fetchall()
     trac.setVersionList(versions, 'version')
 
     print
     print "5. import milestones..."
-    sql = "SELECT version FROM mantis_project_version_table"
+    sql = "SELECT version, date_order, released, obsolete FROM mantis_project_version_table GROUP BY version"
     if PRODUCTS:
-       sql += " WHERE %s" % productFilter('project_id', project_dict)
+      sql += " WHERE %s" % productFilter('project_id', project_dict)
     mysql_cur.execute(sql)
     milestones = mysql_cur.fetchall()
+    for milestone in milestones:
+      if milestone['obsolete'] != 0 or milestone['released'] != 0:
+         milestone['released'] = trac.convertTime(milestone['date_order'])
+      else:
+         milestone['released'] = None
     trac.setMilestoneList(milestones, 'version')
 
     print
     print '6. retrieving bugs...'
-    sql = "SELECT * FROM mantis_bug_table "
+    sql = "SELECT mantis_bug_table.id, date_submitted, last_updated, mantis_category_table.name, severity, priority, handler_id, reporter_id, version, target_version, summary, mantis_bug_table.status, resolution, bug_text_id FROM mantis_bug_table, mantis_category_table "
+    sql += "WHERE mantis_bug_table.category_id=mantis_category_table.id "
+    sql += "GROUP BY mantis_bug_table.id "
     if PRODUCTS:
        sql += " WHERE %s" % productFilter('project_id', project_dict)
     sql += " ORDER BY id"
@@ -654,13 +708,12 @@ def convert(_db, _host, _user, _password, _env, _force):
     timeAdjustmentHacks = []
     for bug in bugs:
         bugid = bug['id']
-        
         ticket = {}
         keywords = []
         ticket['id'] = bugid
         ticket['time'] = bug['date_submitted']
         ticket['changetime'] = bug['last_updated']
-        ticket['component'] = bug['category']
+        ticket['component'] = bug['name']
         ticket['severity'] = SEVERITY_TRANSLATE[bug['severity']]
         ticket['priority'] = PRIORITY_TRANSLATE[bug['priority']]
         ticket['owner'] = trac.getLoginName(mysql_cur, bug['handler_id'])
@@ -669,6 +722,11 @@ def convert(_db, _host, _user, _password, _env, _force):
         if IGNORE_VERSION:
           ticket['version'] = ''
         ticket['milestone'] = bug['version']
+	if bug['target_version']:
+          ticket['milestone'] = bug['target_version']
+	#else:
+	#  ticket['milestone'] = ''
+	
         ticket['summary'] = bug['summary']
         ticket['status'] = STATUS_TRANSLATE[bug['status']]
         ticket['cc'] = ''
@@ -691,15 +749,15 @@ def convert(_db, _host, _user, _password, _env, _force):
         else:
             tmpDescr = longdescs[0]['description']
             if (longdescs[0]['steps_to_reproduce'].strip() != ''):
-               tmpDescr = ('%s\n\nSTEPS TO REPRODUCE:\n%s') % (tmpDescr, longdescs[0]['steps_to_reproduce'])
+               tmpDescr = ('%s\n\n=== Steps to Reproduce ===\n%s') % (tmpDescr, longdescs[0]['steps_to_reproduce'])
             if (longdescs[0]['additional_information'].strip() != ''):
-               tmpDescr = ('%s\n\nADDITIONAL INFORMATION:\n%s') % (tmpDescr, longdescs[0]['additional_information'])
+               tmpDescr = ('%s\n\n=== Additional Information ===\n%s') % (tmpDescr, longdescs[0]['additional_information'])
             ticket['description'] = tmpDescr
             del longdescs[0]
 
         # Add the ticket to the Trac database
         trac.addTicket(**ticket)
-        
+       
         #
         # Add ticket comments
         #
@@ -707,12 +765,20 @@ def convert(_db, _host, _user, _password, _env, _force):
         bug_notes = mysql_cur.fetchall()
         totalComments += len(bug_notes)
         for note in bug_notes:
+          #Check for changesets, and add trac changeset links to the comments section where applicable
+	 #    mysql_cur.execute("SELECT * FROM mantis_bug_history_table WHERE bug_id=%s AND date_modified > %s AND date_modified < %s AND field_name='source_changeset_attached' AND user_id=%s " % (bugid, note['date_submitted']-2, note['date_submitted']+2, note['reporter_id']))
+  #           activity = mysql_cur.fetchall()
+  # 	    if activity:
+		# project, branch, commit = activity[0]['new_value'].split()
+		# wikivalue = '%s [http://trac.interworx.com:8888/browser/?rev=%s %s] [%s]' % (project, commit, branch, commit)
+		# note['note']  = note['note'] + "\n\n" + wikivalue
             trac.addTicketComment(bugid, note['date_submitted'], trac.getLoginName(mysql_cur, note['reporter_id']), note['note'])
 
         #
         # Convert ticket changes
         #
-        mysql_cur.execute("SELECT * FROM mantis_bug_history_table WHERE bug_id = %s ORDER BY date_modified" % bugid)
+        #mysql_cur.execute("SELECT * FROM mantis_bug_history_table WHERE bug_id = %s ORDER BY date_modified " % bugid)
+	mysql_cur.execute("SELECT * FROM mantis_bug_history_table WHERE bug_id=%s ORDER BY date_modified, id" % bugid)
         bugs_activity = mysql_cur.fetchall()
         resolution = ''
         ticketChanges = []
@@ -752,35 +818,60 @@ def convert(_db, _host, _user, _password, _env, _force):
 
             add_keywords = []
             remove_keywords = []
-            
+
+	    try:
+		activity['old_value'] = int(activity['old_value'])
+	    except ValueError:
+		activity['old_value'] = activity['old_value'].upper()
+           
+	    try:
+                activity['new_value'] = int(activity['new_value'])
+            except ValueError:
+                activity['new_value'] = activity['new_value'].upper()
+ 
             if field_name == 'handler_id':
                 ticketChange['field'] = 'owner'
-                ticketChange['oldvalue'] = trac.getLoginName(mysql_cur, int(activity['old_value']))
-                ticketChange['newvalue'] = trac.getLoginName(mysql_cur, int(activity['new_value']))
-            elif field_name == 'fixed_in_version':
-                ticketChange['field'] = 'milestone'
+                ticketChange['oldvalue'] = trac.getLoginName(mysql_cur, activity['old_value'])
+                ticketChange['newvalue'] = trac.getLoginName(mysql_cur, activity['new_value'])
+            #elif field_name == 'fixed_in_version':
+                #ticketChange['field'] = 'milestone'
             elif field_name == 'category':
                 ticketChange['field'] = 'component'
             elif field_name == 'version':
                 ticketChange['field'] = 'milestone'
             elif field_name == 'status':
-                ticketChange['oldvalue'] = STATUS_TRANSLATE[int(activity['old_value'])]
-                ticketChange['newvalue'] = STATUS_TRANSLATE[int(activity['new_value'])]
-                if int(activity['old_value']) in STATUS_KEYWORDS:
-                    remove_keywords.append(STATUS_KEYWORDS[int(activity['old_value'])])
-                if int(activity['new_value']) in STATUS_KEYWORDS:
-                    add_keywords.append(STATUS_KEYWORDS[int(activity['new_value'])])
-                
+		try:
+                    ticketChange['oldvalue'] = STATUS_TRANSLATE[activity['old_value']]
+		except:
+		    if activity['old_value'] in STATUS_TRANSLATE:
+		        key = [k for k, v in STATUS_KEYWORDS.iteritems() if activity['old_value'] in v]
+		        ticketChange['oldvalue'] = STATUS_TRANSLATE[key[0]]
+		try:
+                    ticketChange['newvalue'] = STATUS_TRANSLATE[activity['new_value']]
+		except:
+		    if activity['new_value'] in STATUS_TRANSLATE:
+		        key = [k for k, v in STATUS_KEYWORDS.iteritems() if activity['new_value'] in v]
+		        ticketChange['newvalue'] = STATUS_TRANSLATE[key[0]]
+                if activity['old_value'] in STATUS_KEYWORDS:
+                    remove_keywords.append(STATUS_KEYWORDS[activity['old_value']])
+                if activity['new_value'] in STATUS_KEYWORDS:
+                    add_keywords.append(STATUS_KEYWORDS[activity['new_value']])
             elif field_name == 'priority':
-                ticketChange['oldvalue'] = PRIORITY_TRANSLATE[int(activity['old_value'])]
-                ticketChange['newvalue'] = PRIORITY_TRANSLATE[int(activity['new_value'])]
+                ticketChange['oldvalue'] = PRIORITY_TRANSLATE[activity['old_value']]
+                ticketChange['newvalue'] = PRIORITY_TRANSLATE[activity['new_value']]
             elif field_name == 'resolution':
-                ticketChange['oldvalue'] = RESOLUTION_TRANSLATE[int(activity['old_value'])]
-                ticketChange['newvalue'] = RESOLUTION_TRANSLATE[int(activity['new_value'])]
+                ticketChange['oldvalue'] = RESOLUTION_TRANSLATE[activity['old_value']]
+                ticketChange['newvalue'] = RESOLUTION_TRANSLATE[activity['new_value']]
             elif field_name == 'severity':
-                ticketChange['oldvalue'] = SEVERITY_TRANSLATE[int(activity['old_value'])]
-                ticketChange['newvalue'] = SEVERITY_TRANSLATE[int(activity['new_value'])]            
-
+                ticketChange['oldvalue'] = SEVERITY_TRANSLATE[activity['old_value']]
+                ticketChange['newvalue'] = SEVERITY_TRANSLATE[activity['new_value']]
+	    elif field_name == 'source_changeset_attached':
+		try:
+		  project, branch, commit = ticketChange['newvalue'].split()
+                  wikivalue = '%s [http://trac.interworx.com:8888/browser/?rev=%s %s] [%s]' % (project, commit, branch, commit)
+		  trac.addTicketComment( ticketChange['ticket'], ticketChange['time'], ticketChange['author'], wikivalue )
+		except:
+		  print
             if add_keywords or remove_keywords:
                 # ensure removed ones are in old
                 old_keywords = keywords + [kw for kw in remove_keywords if kw not in keywords]
@@ -810,9 +901,9 @@ def convert(_db, _host, _user, _password, _env, _force):
                 trac.addTicketChange (**ticketChange)
             except:
                 if TIME_ADJUSTMENT_HACK:
-                    addTime = datetime.timedelta(seconds=1)
+                    #addTime = timedelta(seconds=1)
                     originalTime = ticketChange['time']
-                    ticketChange['time'] += addTime
+                    ticketChange['time'] += 1
                     try:
                         trac.addTicketChange(**ticketChange)
                         noticeStr = " ~ Successfully adjusted time for ticket(#%s) change \"%s\": \"%s\" -> \"%s\" (%s)" % (bugid, ticketChange['field'], ticketChange['oldvalue'], ticketChange['newvalue'], ticketChange['time'])
@@ -833,11 +924,11 @@ def convert(_db, _host, _user, _password, _env, _force):
         #
         # Add ticket file attachments
         #
-        attachment_sql = "SELECT b.id,b.bug_id,b.title,b.description,b.filename,b.filesize,b.file_type,UNIX_TIMESTAMP(b.date_added) AS date_added, b.content, h.user_id FROM mantis_bug_file_table AS b LEFT JOIN mantis_bug_history_table AS h ON (h.type = 9 AND h.old_value = b.filename AND h.bug_id = b.bug_id) WHERE b.bug_id = %s" % bugid
-        # print attachment_sql
+        attachment_sql = "SELECT b.id,b.bug_id,b.title,b.description,b.filename,b.filesize,b.file_type,b.date_added AS date_added, b.content, h.user_id FROM mantis_bug_file_table AS b LEFT JOIN mantis_bug_history_table AS h ON (h.type = 9 AND h.old_value = b.filename AND h.bug_id = b.bug_id) WHERE b.bug_id = %s" % bugid
         mysql_cur.execute(attachment_sql)
         attachments = mysql_cur.fetchall()
         for attachment in attachments:
+	    print attachment['user_id']
             author = trac.getLoginName(mysql_cur, attachment['user_id'])
 
             # Old attachment stuff that never worked...
@@ -865,7 +956,7 @@ def convert(_db, _host, _user, _password, _env, _force):
                     errors.append(errorStr)
                     print errorStr
                 else:
-                    attach_sql = """INSERT INTO attachment (type,id,filename,size,time,description,author,ipnr) VALUES ('ticket',%s,'%s',%i,%i,'%s','%s','127.0.0.1')""" % (bugid,attachment['filename'].encode('utf-8'),attachment['filesize'],attachment['date_added'],attachment['description'].encode('utf-8'),author)
+                    attach_sql = """INSERT INTO attachment (type,id,filename,size,time,description,author,ipnr) VALUES ('ticket',%s,'%s',%i,%i,'%s','%s','127.0.0.1')""" % (bugid,attachment['filename'].encode('utf-8'),attachment['filesize'],trac.convertTime(attachment['date_added']),attachment['description'].encode('utf-8'),author)
                     try:
                         c = trac.db().cursor()
                         c.execute(attach_sql)
@@ -878,6 +969,22 @@ def convert(_db, _host, _user, _password, _env, _force):
                         print 'inserting attachment for ticket %s -- %s, added by %s' % (bugid, attachment['description'], author)
 
                         totalAttachments += 1
+			hash      = hashlib.sha1()
+		        hash.update(str(bugid).encode('utf-8'))
+			path_hash = hash.hexdigest()
+		        hash      = hashlib.sha1()
+			hash.update(attachment['filename'].encode('utf-8'))
+			file_hash = hash.hexdigest()
+		        old_path  = 'importfiles/%s/%s' % (bugid, quote(attachment['filename']))
+		        new_path  = TRAC_ENV + '/files/attachments/ticket/'
+			new_path += '%s/%s/' % (path_hash[0:3], path_hash)
+			try:
+			  os.makedirs(new_path)
+			except:
+			  print
+			new_path += file_hash
+			new_path += os.path.splitext(attachment['filename'])[1]
+			os.rename(old_path, new_path) 
             except:
                 errorStr = " * ERROR: couldn't migrate attachment %s" % attachment['filename']
                 errors.append(errorStr)
@@ -962,3 +1069,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
