@@ -100,7 +100,7 @@ Notes:
     
 """
 from urllib import quote
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 import time
 import hashlib
 
@@ -276,7 +276,6 @@ PRIORITY_TRANSLATE = {
     10 : 'none'
 }
 
-
 # Some fields in Mantis do not have equivalents in Trac.  Changes in
 # fields listed here will not be imported into the ticket change history,
 # otherwise you'd see changes for fields that don't exist in Trac.
@@ -362,7 +361,6 @@ class TracDatabase(object):
             c.execute("""INSERT INTO enum (type, name, value) VALUES (%s, %s, %s)""",
                       ("priority", value.encode('utf-8'), i,))
         self.db().commit()
-
     
     def setComponentList(self, l, key):
         """Remove all components, set them to `l`"""
@@ -398,7 +396,6 @@ class TracDatabase(object):
             print "inserting milestone ", ms[key]
             c.execute("""INSERT INTO milestone (name, due, completed) VALUES (%s, %s, %s)""",
                       (ms[key].encode('utf-8'), self.convertTime(ms['date_order']), ms['released']))
-
         self.db().commit()
     
     def addTicket(self, id, time, changetime, component,
@@ -409,10 +406,10 @@ class TracDatabase(object):
         if IGNORE_VERSION:
           version=''
         
-        desc = description.encode('utf-8')
+        desc = description
 	type = 'defect'
  	if component == 'Features' or severity == 'feature':
-	   type = 'enhancement'
+	  type = 'enhancement'
         if PREFORMAT_COMMENTS:
           desc = '{{{\n%s\n}}}' % desc
 	print "inserting ticket %s -- \"%s\"" % (id, summary[0:40].replace("\n", " "))
@@ -427,13 +424,13 @@ class TracDatabase(object):
                   (id, type, self.convertTime(time), self.convertTime(changetime), component.encode('utf-8'),
                   severity.encode('utf-8'), priority.encode('utf-8'), owner, reporter, cc,
                   version, milestone.encode('utf-8'), status.lower(), resolution,
-                  summary.decode('utf-8'), desc.decode('utf-8'), keywords.encode('utf-8')))
+                  summary.decode('utf-8'), desc, keywords.encode('utf-8')))
         self.db().commit()
 
         ## TODO: add database-specific methods to get the last inserted ticket's id...
         ## PostgreSQL:
         # c.execute('''SELECT currval("ticket_id_seq")''')
-        # SQLite:
+        ## SQLite:
         # c.execute('''SELECT last_insert_rowid()''')
         ## MySQL:
         # c.execute('''SELECT LAST_INSERT_ID()''')
@@ -448,7 +445,7 @@ class TracDatabase(object):
 	#return
         print " * adding comment \"%s...\"" % value[0:40]
         comment = value
-        
+
         if PREFORMAT_COMMENTS:
           comment = '{{{\n%s\n}}}' % comment
 
@@ -459,7 +456,6 @@ class TracDatabase(object):
         self.db().commit()
 
     def addTicketChange(self, ticket, time, author, field, oldvalue, newvalue):
-	#return
         if (field[0:4]=='doba'): 
           return
 
@@ -469,7 +465,7 @@ class TracDatabase(object):
         print " * adding ticket change \"%s\": \"%s\" -> \"%s\" (%s)" % (field, oldvalue[0:20], newvalue[0:20], time)
         c = self.db().cursor()
 	
-	#workaround 'unique' warnings POTENTIALLY BAD IDEA ALERT
+	#workaround 'unique' ticket_change warnings POTENTIALLY BAD IDEA ALERT
 	sql = "SELECT * FROM ticket_change WHERE field='%s' AND ticket=%s AND time=%s" % (field, ticket, self.convertTime(time))
 	c.execute(sql)
 	fixtime = c.fetchall()
@@ -480,7 +476,7 @@ class TracDatabase(object):
                   (ticket, self.convertTime(time), author, field, oldvalue.encode('utf-8'), newvalue.encode('utf-8')))
         self.db().commit()
        
-	#workaround 'unique' warnings POTENTIALLY BAD IDEA ALERT
+	#workaround 'unique' ticket warnings POTENTIALLY BAD IDEA ALERT
         sql = "SELECT * FROM ticket WHERE %s='%s' AND id=%s AND time=%s" % (field, newvalue, ticket, self.convertTime(time))
         c.execute(sql)
         fixtime = c.fetchall()
@@ -488,8 +484,6 @@ class TracDatabase(object):
           time = time + 1
  
 	# Now actually change the ticket because the ticket wont update itself!
-        if field == 'component' and newvalue[0:2] == '|-':
-	  newvalue = 'x - SORTME'
 	sql = "UPDATE ticket SET %s='%s' WHERE id=%s" % (field, newvalue, ticket)
         c.execute(sql)
         self.db().commit()        
@@ -556,7 +550,7 @@ class TracDatabase(object):
 
             self.loginNameCache[userid] = loginName
 	elif userid is None or userid == '':
-	    self.loginNameCache[userid] = 'anonymous'
+	    self.loginNameCache[userid] = ''
         return self.loginNameCache[userid]
 
     def get_attachments_dir(self,bugid=0):
@@ -653,12 +647,12 @@ def convert(_db, _host, _user, _password, _env, _force):
     print "2. import components..."
     sql = "SELECT DISTINCT name as category, user_id as owner FROM mantis_category_table, mantis_bug_table WHERE user_id=user_id GROUP BY category"
     if PRODUCTS:
-      sql += " WHERE %s" % productFilter('project_id', project_dict)
+       sql += " WHERE %s" % productFilter('project_id', project_dict)
     print "sql: %s" % sql
     mysql_cur.execute(sql)
     components = mysql_cur.fetchall()
     for component in components:
-       component['owner'] = trac.getLoginName(mysql_cur, component['owner'])
+        component['owner'] = trac.getLoginName(mysql_cur, component['owner'])
     trac.setComponentList(components, 'category')
     
     print
@@ -669,7 +663,7 @@ def convert(_db, _host, _user, _password, _env, _force):
     print "4. import versions..."
     sql = "SELECT DISTINCTROW version FROM mantis_project_version_table"
     if PRODUCTS:
-      sql += " WHERE %s" % productFilter('project_id', project_dict)
+       sql += " WHERE %s" % productFilter('project_id', project_dict)
     mysql_cur.execute(sql)
     versions = mysql_cur.fetchall()
     trac.setVersionList(versions, 'version')
@@ -678,7 +672,7 @@ def convert(_db, _host, _user, _password, _env, _force):
     print "5. import milestones..."
     sql = "SELECT version, date_order, released, obsolete FROM mantis_project_version_table GROUP BY version"
     if PRODUCTS:
-      sql += " WHERE %s" % productFilter('project_id', project_dict)
+       sql += " WHERE %s" % productFilter('project_id', project_dict)
     mysql_cur.execute(sql)
     milestones = mysql_cur.fetchall()
     for milestone in milestones:
@@ -708,6 +702,7 @@ def convert(_db, _host, _user, _password, _env, _force):
     timeAdjustmentHacks = []
     for bug in bugs:
         bugid = bug['id']
+
         ticket = {}
         keywords = []
         ticket['id'] = bugid
@@ -724,9 +719,6 @@ def convert(_db, _host, _user, _password, _env, _force):
         ticket['milestone'] = bug['version']
 	if bug['target_version']:
           ticket['milestone'] = bug['target_version']
-	#else:
-	#  ticket['milestone'] = ''
-	
         ticket['summary'] = bug['summary']
         ticket['status'] = STATUS_TRANSLATE[bug['status']]
         ticket['cc'] = ''
@@ -757,7 +749,7 @@ def convert(_db, _host, _user, _password, _env, _force):
 
         # Add the ticket to the Trac database
         trac.addTicket(**ticket)
-       
+ 
         #
         # Add ticket comments
         #
@@ -766,18 +758,17 @@ def convert(_db, _host, _user, _password, _env, _force):
         totalComments += len(bug_notes)
         for note in bug_notes:
           #Check for changesets, and add trac changeset links to the comments section where applicable
-	 #    mysql_cur.execute("SELECT * FROM mantis_bug_history_table WHERE bug_id=%s AND date_modified > %s AND date_modified < %s AND field_name='source_changeset_attached' AND user_id=%s " % (bugid, note['date_submitted']-2, note['date_submitted']+2, note['reporter_id']))
-  #           activity = mysql_cur.fetchall()
-  # 	    if activity:
-		# project, branch, commit = activity[0]['new_value'].split()
-		# wikivalue = '%s [http://trac.interworx.com:8888/browser/?rev=%s %s] [%s]' % (project, commit, branch, commit)
-		# note['note']  = note['note'] + "\n\n" + wikivalue
-            trac.addTicketComment(bugid, note['date_submitted'], trac.getLoginName(mysql_cur, note['reporter_id']), note['note'])
+	  mysql_cur.execute("SELECT * FROM mantis_bug_history_table WHERE bug_id=%s AND date_modified > %s AND date_modified < %s AND field_name='source_changeset_attached' AND user_id=%s " % (bugid, note['date_submitted']-2, note['date_submitted']+2, note['reporter_id']))
+          activity = mysql_cur.fetchall()
+          if activity:
+		project, branch, commit = activity[0]['new_value'].split()
+		wikivalue = '%s [/browser/?rev=%s %s] [%s]' % (project, commit, branch, commit)
+		note['note']  = note['note'] + "\n\n" + wikivalue
+          trac.addTicketComment(bugid, note['date_submitted'], trac.getLoginName(mysql_cur, note['reporter_id']), note['note'])
 
         #
         # Convert ticket changes
         #
-        #mysql_cur.execute("SELECT * FROM mantis_bug_history_table WHERE bug_id = %s ORDER BY date_modified " % bugid)
 	mysql_cur.execute("SELECT * FROM mantis_bug_history_table WHERE bug_id=%s ORDER BY date_modified, id" % bugid)
         bugs_activity = mysql_cur.fetchall()
         resolution = ''
@@ -835,7 +826,7 @@ def convert(_db, _host, _user, _password, _env, _force):
                 ticketChange['newvalue'] = trac.getLoginName(mysql_cur, activity['new_value'])
             #elif field_name == 'fixed_in_version':
                 #ticketChange['field'] = 'milestone'
-            elif field_name == 'category':
+            elif field_name == 'name':
                 ticketChange['field'] = 'component'
             elif field_name == 'version':
                 ticketChange['field'] = 'milestone'
@@ -868,7 +859,7 @@ def convert(_db, _host, _user, _password, _env, _force):
 	    elif field_name == 'source_changeset_attached':
 		try:
 		  project, branch, commit = ticketChange['newvalue'].split()
-                  wikivalue = '%s [http://trac.interworx.com:8888/browser/?rev=%s %s] [%s]' % (project, commit, branch, commit)
+                  wikivalue = '%s [/browser/?rev=%s %s] [%s]' % (project, commit, branch, commit)
 		  trac.addTicketComment( ticketChange['ticket'], ticketChange['time'], ticketChange['author'], wikivalue )
 		except:
 		  print
@@ -901,7 +892,6 @@ def convert(_db, _host, _user, _password, _env, _force):
                 trac.addTicketChange (**ticketChange)
             except:
                 if TIME_ADJUSTMENT_HACK:
-                    #addTime = timedelta(seconds=1)
                     originalTime = ticketChange['time']
                     ticketChange['time'] += 1
                     try:
@@ -1069,4 +1059,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
