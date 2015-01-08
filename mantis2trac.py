@@ -7,6 +7,14 @@ Requires:  Trac 0.9.X or newer from http://trac.edgewall.com/
            Python 2.4 from http://www.python.org/
            MySQL >= 3.23 from http://www.mysql.org/
 
+Example use:
+  python mantis2trac.py --db mantis --tracenv /usr/local/trac-projects/myproj/ \
+    --host localhost --user root --clean --append --products foo,bar
+
+Version 1.6
+Author: Steffen Mecke (stm2@users.sourceforge.net)
+Date: January 8, 2015
+
 Version 1.5
 Author: Matthew Parmelee (mparmelee@interworx.com)
 Date: July 16, 2013
@@ -30,9 +38,9 @@ Dmitry Yusupov <dmitry_yus@yahoo.com> - bugzilla2trac.py
 Mark Rowe <mrowe@bluewire.net.nz> - original TracDatabase class
 Bill Soudan <bill@soudan.net> - Many enhancements 
 
-Example use:
-  python mantis2trac.py --db mantis --tracenv /usr/local/trac-projects/myproj/ \
-    --host localhost --user root --clean --products foo,bar
+Changes in version 1.6:
+  - allow to append to an existing project (with correct id mapping)
+  - fixed to work with mysql by removing INSERT OR REPLACE syntax
 
 Changes in version 1.5:
   - repaired queries to be consistent with Mantis updates
@@ -125,11 +133,13 @@ MANTIS_USER = 'root'
 MANTIS_PASSWORD = ''
 
 # Path to the Trac environment.
-TRAC_ENV = ''
+TRAC_ENV = '/var/www/trac/projectname/'
 
 # If true, all existing Trac tickets will be removed 
 # prior to import.
-TRAC_CLEAN = True
+TRAC_CLEAN = False
+# If TRAC_CLEAN is true and this is true, tickets will be appended
+TRAC_APPEND = True
 
 # Enclose imported ticket description and comments in a {{{ }}} 
 # preformat block?  This formats the text in a fixed-point font.
@@ -319,7 +329,8 @@ class FieldTranslator(dict):
 statusXlator = FieldTranslator(STATUS_TRANSLATE)
 
 class TracDatabase(object):
-    def __init__(self, path):
+    def __init__(self, path, append):
+        self.append = _append
         self.env = Environment(path)
         self._db = self.env.get_db_cnx()
         self._db.autocommit = False
@@ -335,8 +346,9 @@ class TracDatabase(object):
         return int(c.fetchall()[0][0]) > 0
 
     def assertNoTickets(self):
-        if self.hasTickets():
-            raise Exception("Will not modify database with existing tickets!")
+        if not self._append or self.hasTickets():
+          raise Exception("Will not modify database with existing tickets!")
+          return
     
     def setSeverityList(self, s):
         """Remove all severities, set them to `s`"""
@@ -413,15 +425,15 @@ class TracDatabase(object):
         if PREFORMAT_COMMENTS:
           desc = '{{{\n%s\n}}}' % desc
 	print "inserting ticket %s -- \"%s\"" % (id, summary[0:40].replace("\n", " "))
-        c.execute("""INSERT OR REPLACE INTO ticket (id, type, time, changetime, component,
+        c.execute("""INSERT INTO ticket (type, time, changetime, component,
                                          severity, priority, owner, reporter, cc,
                                          version, milestone, status, resolution,
                                          summary, description, keywords)
-                                 VALUES (%s, %s, %s, %s, %s,
+                                 VALUES (%s, %s, %s, %s,
                                          %s, %s, %s, %s, %s,
                                          %s, %s, %s, %s,
                                          %s, %s, %s)""",
-                  (id, type, self.convertTime(time), self.convertTime(changetime), component.encode('utf-8'),
+                  (type, self.convertTime(time), self.convertTime(changetime), component.encode('utf-8'),
                   severity.encode('utf-8'), priority.encode('utf-8'), owner, reporter, cc,
                   version, milestone.encode('utf-8'), status.lower(), resolution,
                   summary.decode('utf-8'), desc, keywords.encode('utf-8')))
@@ -450,7 +462,7 @@ class TracDatabase(object):
           comment = '{{{\n%s\n}}}' % comment
 
         c = self.db().cursor()
-        c.execute("""INSERT OR IGNORE INTO ticket_change (ticket, time, author, field, oldvalue, newvalue)
+        c.execute("""INSERT  INTO ticket_change (ticket, time, author, field, oldvalue, newvalue)
                                  VALUES        (%s, %s, %s, %s, %s, %s)""",
                   (ticket, self.convertTime(time), author, 'comment', '', comment))
         self.db().commit()
@@ -471,7 +483,7 @@ class TracDatabase(object):
 	fixtime = c.fetchall()
 	if fixtime:
 	  time = time + 1
-        c.execute("""INSERT OR IGNORE INTO ticket_change (ticket, time, author, field, oldvalue, newvalue)
+        c.execute("""INSERT  INTO ticket_change (ticket, time, author, field, oldvalue, newvalue)
                                  VALUES        (%s, %s, %s, %s, %s, %s)""",
                   (ticket, self.convertTime(time), author, field, oldvalue.encode('utf-8'), newvalue.encode('utf-8')))
         self.db().commit()
@@ -513,7 +525,7 @@ class TracDatabase(object):
                 if not r:
                     sessionSql = """INSERT INTO session 
                             (sid, authenticated, last_visit) 
-                        VALUES (%s, %s, %s)""", (result[0]['username'].encode('utf-8'), '1', self.convertTime(result[0]['last_visit']))
+                        VALUES (%s, %s, %d)""", (result[0]['username'].encode('utf-8'), '1', self.convertTime(result[0]['last_visit']))
                     # pre-populate the session table and the realname/email table with user data
                     try:
                         c.execute(sessionSql)
@@ -588,7 +600,7 @@ def productFilter(fieldName, products):
         result += "%s = '%s'" % (fieldName, product)
     return result
 
-def convert(_db, _host, _user, _password, _env, _force):
+def convert(_db, _host, _user, _password, _env, _force, _append):
     activityFields = FieldTranslator()
 
     # account for older versions of mantis
@@ -606,7 +618,7 @@ def convert(_db, _host, _user, _password, _env, _force):
 
     # init Trac environment
     print "Trac database('%s'): connecting..." % (_env)
-    trac = TracDatabase(_env)
+    trac = TracDatabase(_env, _append)
 
     # force mode...
     if _force == 1:
@@ -748,8 +760,9 @@ def convert(_db, _host, _user, _password, _env, _force):
             del longdescs[0]
 
         # Add the ticket to the Trac database
-        trac.addTicket(**ticket)
- 
+        new_id = trac.addTicket(**ticket)
+        print "ticket %s has id %s" % (bugid, new_id)
+
         #
         # Add ticket comments
         #
@@ -764,7 +777,7 @@ def convert(_db, _host, _user, _password, _env, _force):
 		project, branch, commit = activity[0]['new_value'].split()
 		wikivalue = '%s [/browser/?rev=%s %s] [%s]' % (project, commit, branch, commit)
 		note['note']  = note['note'] + "\n\n" + wikivalue
-          trac.addTicketComment(bugid, note['date_submitted'], trac.getLoginName(mysql_cur, note['reporter_id']), note['note'])
+          trac.addTicketComment(new_id, note['date_submitted'], trac.getLoginName(mysql_cur, note['reporter_id']), note['note'])
 
         #
         # Convert ticket changes
@@ -800,7 +813,7 @@ def convert(_db, _host, _user, _password, _env, _force):
             #  - 'version' -> 'milestone'
             
             ticketChange = {}
-            ticketChange['ticket'] = bugid
+            ticketChange['ticket'] = new_id
             ticketChange['oldvalue'] = activity['old_value']
             ticketChange['newvalue'] = activity['new_value']
             ticketChange['time'] = activity['date_modified']
@@ -929,24 +942,24 @@ def convert(_db, _host, _user, _password, _env, _force):
 
             try:
                 try:
-                    if(os.path.isdir(trac.get_attachments_dir(bugid)) == False):
+                    if(os.path.isdir(trac.get_attachments_dir(new_id)) == False):
                         try:
-                            os.mkdir(trac.get_attachments_dir(bugid))
+                            os.mkdir(trac.get_attachments_dir(new_id))
                         except:
-                            errorStr = " * ERROR: couldnt create attachment directory in filesystem at %s" % trac.get_attachments_dir(bugid)
+                            errorStr = " * ERROR: couldnt create attachment directory in filesystem at %s" % trac.get_attachments_dir(new_id)
                             errors.append(errorStr)
                             print errorStr
                     # trac stores the files with the special characters like spaces in the filename encoded to the url 
                     # equivalents, so we have to urllib.quote() the filename we're saving. 
-                    attachmentFile = open(trac.get_attachments_dir(bugid) + quote(attachment['filename']),'wb')
+                    attachmentFile = open(trac.get_attachments_dir(new_id) + quote(attachment['filename']),'wb')
                     attachmentFile.write(attachment['content'])
                     attachmentFile.close()
                 except:
-                    errorStr = " * ERROR: couldnt dump attachment data into filesystem at %s" % trac.get_attachments_dir(bugid) + attachment['filename']
+                    errorStr = " * ERROR: couldnt dump attachment data into filesystem at %s" % trac.get_attachments_dir(new_id) + attachment['filename']
                     errors.append(errorStr)
                     print errorStr
                 else:
-                    attach_sql = """INSERT INTO attachment (type,id,filename,size,time,description,author,ipnr) VALUES ('ticket',%s,'%s',%i,%i,'%s','%s','127.0.0.1')""" % (bugid,attachment['filename'].encode('utf-8'),attachment['filesize'],trac.convertTime(attachment['date_added']),attachment['description'].encode('utf-8'),author)
+                    attach_sql = """INSERT INTO attachment (type,id,filename,size,time,description,author,ipnr) VALUES ('ticket',%s,'%s',%i,%i,'%s','%s','127.0.0.1')""" % (new_id,attachment['filename'].encode('utf-8'),attachment['filesize'],trac.convertTime(attachment['date_added']),attachment['description'].encode('utf-8'),author)
                     try:
                         c = trac.db().cursor()
                         c.execute(attach_sql)
@@ -960,12 +973,12 @@ def convert(_db, _host, _user, _password, _env, _force):
 
                         totalAttachments += 1
 			hash      = hashlib.sha1()
-		        hash.update(str(bugid).encode('utf-8'))
+		        hash.update(str(new_id).encode('utf-8'))
 			path_hash = hash.hexdigest()
 		        hash      = hashlib.sha1()
 			hash.update(attachment['filename'].encode('utf-8'))
 			file_hash = hash.hexdigest()
-		        old_path  = 'importfiles/%s/%s' % (bugid, quote(attachment['filename']))
+		        old_path  = 'importfiles/%s/%s' % (new_id, quote(attachment['filename']))
 		        new_path  = TRAC_ENV + '/files/attachments/ticket/'
 			new_path += '%s/%s/' % (path_hash[0:3], path_hash)
 			try:
@@ -1009,6 +1022,7 @@ def usage():
     print "  -u | --user <MySQL username>     - Effective Mantis database user"
     print "  -p | --passwd <MySQL password>   - Mantis database user password"
     print "  -c | --clean                     - Remove current Trac tickets before importing"
+    print "  -a | --append                    - Append bugs to existing project"
     print "  --products <product1,product2>   - List of products to import from mantis"
     print "  --help | help                    - This help info"
     print
@@ -1045,6 +1059,8 @@ def main():
                 iter = iter + 1
             elif sys.argv[iter] in ['-c', '--clean']:
                 TRAC_CLEAN = 1
+            elif sys.argv[iter] in ['-a', '--append']:
+                TRAC_APPEND = 1
             elif sys.argv[iter] in ['--products'] and iter+1 < len(sys.argv):
                 PRODUCTS = sys.argv[iter+1].split(',')
                 iter = iter + 1
@@ -1055,7 +1071,7 @@ def main():
     else:
         usage()
         
-    convert(MANTIS_DB, MANTIS_HOST, MANTIS_USER, MANTIS_PASSWORD, TRAC_ENV, TRAC_CLEAN)
+    convert(MANTIS_DB, MANTIS_HOST, MANTIS_USER, MANTIS_PASSWORD, TRAC_ENV, TRAC_CLEAN, TRAC_APPEND)
 
 if __name__ == '__main__':
     main()
