@@ -45,3 +45,4 @@ Available Options:
  * [Anton Stroganov](http://github.com/Aeon)
  * [John Lichovník](http://ufo.cz)
  * [Matthew Parmelee](http://interworx.com)
+ * [Steffen Mecke](https://github.com/stm2)
