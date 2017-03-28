@@ -13,7 +13,7 @@ If you use the script, please read the NOTES section (at the top of the file) an
 ## Bugs/Feature Requests ##
 
 Please report any problems in the [issues section](https://github.com/trac-hacks/mantis2trac/issues).
-Historical bugs and feature requests are on [trac-hacks.org](http://trac-hacks.org/report/9?COMPONENT=MantisImportScript).
+Historical bugs and feature requests are on [trac-hacks.org](http://trac-hacks.org/report/10?COMPONENT=MantisImportScript).
 
 ## Example ##
 
